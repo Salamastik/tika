@@ -1,0 +1,62 @@
+FROM apache/tika:latest-full
+
+USER root
+
+# התקנת תלויות OCR, כלים גרפיים בסיסיים ותוספים
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-heb \
+    tesseract-ocr-ara \
+    tesseract-ocr-rus \
+    tesseract-ocr-por \
+    tesseract-ocr-chi-sim \
+    tesseract-ocr-chi-tra \
+    tesseract-ocr-eng \
+    fonts-noto \
+    fonts-freefont-ttf \
+    ttf-mscorefonts-installer \
+    libtiff-tools \
+    curl \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# יצירת ספריית tika-extras והתקנת TwelveMonkeys ImageIO plugins
+RUN mkdir -p /tika-extras /tmp/tm && \
+    cd /tmp/tm && \
+    curl -L -o imageio-core-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-core/3.9.4/imageio-core-3.9.4.jar && \
+    curl -L -o imageio-jpeg-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-jpeg/3.9.4/imageio-jpeg-3.9.4.jar && \
+    curl -L -o imageio-tiff-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-tiff/3.9.4/imageio-tiff-3.9.4.jar && \
+    curl -L -o imageio-webp-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-webp/3.9.4/imageio-webp-3.9.4.jar && \
+    curl -L -o imageio-psd-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-psd/3.9.4/imageio-psd-3.9.4.jar && \
+    curl -L -o imageio-bmp-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-bmp/3.9.4/imageio-bmp-3.9.4.jar && \
+    curl -L -o imageio-icns-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-icns/3.9.4/imageio-icns-3.9.4.jar && \
+    curl -L -o imageio-iff-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-iff/3.9.4/imageio-iff-3.9.4.jar && \
+    curl -L -o imageio-pcx-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-pcx/3.9.4/imageio-pcx-3.9.4.jar && \
+    curl -L -o imageio-sgi-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-sgi/3.9.4/imageio-sgi-3.9.4.jar && \
+    curl -L -o imageio-tga-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-tga/3.9.4/imageio-tga-3.9.4.jar && \
+    curl -L -o imageio-thumbsdb-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-thumbsdb/3.9.4/imageio-thumbsdb-3.9.4.jar && \
+    curl -L -o common-lang-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/common/common-lang/3.9.4/common-lang-3.9.4.jar && \
+    curl -L -o imageio-metadata-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-metadata/3.9.4/imageio-metadata-3.9.4.jar && \
+    cp *.jar /tika-extras/ && \
+    rm -rf /tmp/tm
+
+# התקנת JAI ImageIO עבור JPEG2000
+RUN curl -L -o /tika-extras/jai-imageio-core-1.4.0.jar \
+    https://repo1.maven.org/maven2/com/github/jai-imageio/jai-imageio-core/1.4.0/jai-imageio-core-1.4.0.jar && \
+    curl -L -o /tika-extras/jai-imageio-jpeg2000-1.3.0.jar \
+    https://repo1.maven.org/maven2/com/github/jai-imageio/jai-imageio-jpeg2000/1.3.0/jai-imageio-jpeg2000-1.3.0.jar
+
+# התקנת JBIG2 ImageIO plugin
+RUN curl -L -o /tika-extras/jbig2-imageio-3.0.4.jar \
+    https://repo1.maven.org/maven2/org/apache/pdfbox/jbig2-imageio/3.0.4/jbig2-imageio-3.0.4.jar
+
+# התקנת מודול ה־Image של Apache Tika
+RUN curl -L -o /tika-extras/tika-parser-image-module-3.2.0.jar \
+    https://repo1.maven.org/maven2/org/apache/tika/tika-parser-image-module/3.2.0/tika-parser-image-module-3.2.0.jar
+
+COPY tika-vlm-parser-1.0.0.jar /tika-extras
+# בדיקת תקינות ההתקנה
+RUN ls -la /tika-extras/*.jar | grep -E "(imageio-|jai-|jbig2-|tika-parser-image)" && \
+    echo "✅ כל הקבצים הותקנו בהצלחה ב-/tika-extras/"
+
+EXPOSE 9998
