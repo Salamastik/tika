@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<properties>
+    <!-- Parser Configuration -->
+    <parsers>
+        <!-- Default composite parser with custom overrides -->
+        <parser class="org.apache.tika.parser.DefaultParser">
+             <mime-exclude>image/jpeg</mime-exclude>
+            <mime-exclude>image/png</mime-exclude>
+            <mime-exclude>image/gif</mime-exclude>
+            <mime-exclude>image/bmp</mime-exclude>
+            <mime-exclude>image/webp</mime-exclude>
+        </parser>
+        
+        <!-- Custom VLM parser for all image types -->
+        <parser class="org.apache.tika.parser.vision.VisionLanguageModelParser">
+            <mime>image/jpeg</mime>
+            <mime>image/jpg</mime>
+            <mime>image/png</mime>
+            <mime>image/gif</mime>
+            <mime>image/bmp</mime>
+            <mime>image/webp</mime>
+            <mime>image/tiff</mime>
+            <mime>image/svg+xml</mime>
+            <mime>image/x-icon</mime>
+            <mime>image/vnd.microsoft.icon</mime>
+            <mime>image/heif</mime>
+            <mime>image/heic</mime>
+            <mime>image/avif</mime>
+            <mime>image/x-adobe-dng</mime>
+            <mime>image/x-canon-cr2</mime>
+            <mime>image/x-canon-crw</mime>
+            <mime>image/x-nikon-nef</mime>
+            <mime>image/x-sony-arw</mime>
+            <mime>image/x-panasonic-raw</mime>
+            <mime>image/x-olympus-orf</mime>
+            <mime>image/vnd.adobe.photoshop</mime>
+            <mime>image/x-portable-pixmap</mime>
+            <mime>image/x-portable-graymap</mime>
+            <mime>image/x-portable-bitmap</mime>
+            <mime>image/x-portable-anymap</mime>
+            <mime>image/*</mime>
+        </parser>
+    </parsers>
+
+    <!-- Async and Parallel Processing Configuration -->
+    <async>
+        <enabled>true</enabled>
+        <queueSize>1000</queueSize>
+        <threadPoolSize>10</threadPoolSize>
+        <maxWaitTimeMillis>300000</maxWaitTimeMillis>
+        <parallelParsing>true</parallelParsing>
+    </async>
+
+    <!-- Fork Parser Configuration for Parallel Processing -->
+    <fork>
+        <enabled>true</enabled>
+        <poolSize>5</poolSize>
+        <maxHeapSize>2g</maxHeapSize>
+        <javaPath>/usr/bin/java</javaPath>
+        <timeoutMillis>120000</timeoutMillis>
+    </fork>
+
+    <!-- Recursive Parser Configuration for Embedded Images -->
+    <recursive>
+        <enabled>true</enabled>
+        <maxDepth>10</maxDepth>
+        <extractEmbedded>true</extractEmbedded>
+        <extractInlineImages>true</extractInlineImages>
+    </recursive>
+
+    <!-- PDF Configuration to Extract Embedded Images -->
+    <pdf>
+        <extractInlineImages>true</extractInlineImages>
+        <extractUniqueInlineImagesOnly>false</extractUniqueInlineImagesOnly>
+    </pdf>
+
+    <!-- Office Documents Configuration -->
+    <office>
+        <extractEmbedded>true</extractEmbedded>
+        <extractInlineImages>true</extractInlineImages>
+        <extractThumbnails>true</extractThumbnails>
+    </office>
+
+    <!-- Service Loader Configuration -->
+    <service-loader>
+        <dynamic>true</dynamic>
+        <loadErrorHandler>WARN</loadErrorHandler>
+    </service-loader>
+
+    <!-- Detector Configuration -->
+    <detectors>
+        <detector class="org.apache.tika.detect.DefaultDetector"/>
+    </detectors>
+
+    <!-- Thread Pool Executor Configuration -->
+    <executor>
+        <corePoolSize>10</corePoolSize>
+        <maximumPoolSize>20</maximumPoolSize>
+        <keepAliveTime>60</keepAliveTime>
+        <workQueueSize>100</workQueueSize>
+    </executor>
+
+    <!-- Server Configuration -->
+    <server>
+        <maxFiles>-1</maxFiles>
+        <taskTimeoutMillis>300000</taskTimeoutMillis>
+        <taskPulseMillis>10000</taskPulseMillis>
+        <maxRestarts>-1</maxRestarts>
+    </server>
+
+    <!-- Pipes Configuration for Async Processing -->
+    <pipes>
+        <tikaConfig>
+            <params>
+                <parseMode>rmeta</parseMode>
+                <writeLimit>100000000</writeLimit>
+                <maxEmbeddedResources>10000</maxEmbeddedResources>
+            </params>
+        </tikaConfig>
+        <numClients>10</numClients>
+        <maxWaitMillis>120000</maxWaitMillis>
+        <sleepOnStartupMillis>0</sleepOnStartupMillis>
+    </pipes>
+</properties>

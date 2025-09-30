@@ -1,0 +1,95 @@
+name: Build VisionLanguageModelParser JAR
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Java
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Cache Maven packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ runner.os }}-maven-
+
+    - name: Set up Maven project
+      run: |
+        mkdir -p src/main/java/org/apache/tika/parser/vision
+        mv VisionLanguageModelParser.java src/main/java/org/apache/tika/parser/vision/
+        # Create minimal pom.xml if it does not exist
+        if [ ! -f pom.xml ]; then
+          cat <<EOF > pom.xml
+        <project xmlns="http://maven.apache.org/POM/4.0.0" 
+                 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+                 xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+                 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+          <modelVersion>4.0.0</modelVersion>
+          <groupId>org.apache.tika</groupId>
+          <artifactId>vision-parser</artifactId>
+          <version>1.0.0</version>
+          <dependencies>
+            <dependency>
+              <groupId>org.apache.tika</groupId>
+              <artifactId>tika-core</artifactId>
+              <version>2.9.0</version>
+            </dependency>
+            <dependency>
+              <groupId>org.apache.tika</groupId>
+              <artifactId>tika-parsers-standard-package</artifactId>
+              <version>2.9.0</version>
+            </dependency>
+            <dependency>
+              <groupId>com.fasterxml.jackson.core</groupId>
+              <artifactId>jackson-databind</artifactId>
+              <version>2.15.2</version>
+            </dependency>
+          </dependencies>
+          <build>
+            <plugins>
+              <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                  <execution>
+                    <phase>package</phase>
+                    <goals><goal>shade</goal></goals>
+                    <configuration>
+                      <createDependencyReducedPom>false</createDependencyReducedPom>
+                    </configuration>
+                  </execution>
+                </executions>
+              </plugin>
+            </plugins>
+          </build>
+        </project>
+        EOF
+                fi
+
+    - name: Build fat JAR
+      run: mvn package
+
+    - name: List target directory
+      run: ls -l target
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: vision-parser-jar
+        path: target/tika-vlm-parser-1.0.0.jar
