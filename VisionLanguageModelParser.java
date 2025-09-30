@@ -238,19 +238,26 @@ public class VisionLanguageModelParser extends AbstractParser {
         }
 
         try {
-            String analysis = "HI VISION";
-            // String analysis = callVisionAPI(base64Image, mimeType);
+            String analysis = callVisionAPI(base64Image, mimeType);
             LOGGER.info("start");
             XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
             xhtml.startDocument();
             
+            xhtml.startElement("div", "class", "vlm-analysis");
+            xhtml.startElement("h2");
+            xhtml.characters("Vision Language Model Analysis");
+            xhtml.endElement("h2");
+            
+            xhtml.startElement("p");
             xhtml.characters(analysis);
+            xhtml.endElement("p");
             
             metadata.add("vlm_provider", provider);
             metadata.add("vlm_model", modelName);
             metadata.add("vlm_prompt", prompt);
             metadata.add("vlm_analysis", analysis);
                         
+            xhtml.endElement("div");
             xhtml.endDocument();
             LOGGER.info("END");
         } catch (Exception e) {
@@ -442,47 +449,6 @@ public class VisionLanguageModelParser extends AbstractParser {
         throw new IOException("Unable to parse VLM API response");
     }
 
-    private void extractAndAddEntities(String analysis, Metadata metadata, 
-                                      XHTMLContentHandler xhtml) 
-            throws SAXException {
-        if (analysis.toLowerCase().contains("text:") || 
-            analysis.toLowerCase().contains("writing:")) {
-            metadata.add("extracted_text_from_vision", "true");
-        }
-        
-        if (analysis.toLowerCase().contains("object") || 
-            analysis.toLowerCase().contains("person") ||
-            analysis.toLowerCase().contains("animal")) {
-            metadata.add("objects_detected", "true");
-        }
-        
-        String[] lines = analysis.split("\n");
-        boolean inList = false;
-        
-        for (String line : lines) {
-            line = line.trim();
-            if (line.isEmpty()) continue;
-            
-            if (line.matches("^\\d+[)\\.].*") || line.startsWith("-") || line.startsWith("*")) {
-                if (!inList) {
-                    xhtml.startElement("ul");
-                    inList = true;
-                }
-                xhtml.startElement("li");
-                xhtml.characters(line.replaceFirst("^[\\d)\\.*-]+\\s*", ""));
-                xhtml.endElement("li");
-            } else {
-                if (inList) {
-                    xhtml.endElement("ul");
-                    inList = false;
-                }
-            }
-        }
-        
-        if (inList) {
-            xhtml.endElement("ul");
-        }
-    }
 }
 
 class UnsafeHttpClient {
