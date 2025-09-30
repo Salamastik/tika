@@ -19,27 +19,7 @@
       <mime>image/gif</mime>
       <mime>image/webp</mime>
       <mime>image/bmp</mime>
-            <mime>image/webp</mime>
-            <mime>image/tiff</mime>
-            <mime>image/svg+xml</mime>
-            <mime>image/x-icon</mime>
-            <mime>image/vnd.microsoft.icon</mime>
-            <mime>image/heif</mime>
-            <mime>image/heic</mime>
-            <mime>image/avif</mime>
-            <mime>image/x-adobe-dng</mime>
-            <mime>image/x-canon-cr2</mime>
-            <mime>image/x-canon-crw</mime>
-            <mime>image/x-nikon-nef</mime>
-            <mime>image/x-sony-arw</mime>
-            <mime>image/x-panasonic-raw</mime>
-            <mime>image/x-olympus-orf</mime>
-            <mime>image/vnd.adobe.photoshop</mime>
-            <mime>image/x-portable-pixmap</mime>
-            <mime>image/x-portable-graymap</mime>
-            <mime>image/x-portable-bitmap</mime>
-            <mime>image/x-portable-anymap</mime>
-            <mime>image/*</mime>
+      <!-- ניתן להוסיף עוד פורמטים של תמונה לפי הצורך -->
     </parser>
 
     <!-- הגדרת PDFParser עם הפעלת חילוץ תמונות מוטמעות -->

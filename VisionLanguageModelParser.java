@@ -240,29 +240,19 @@ public class VisionLanguageModelParser extends AbstractParser {
         try {
             String analysis = "HI VISION";
             // String analysis = callVisionAPI(base64Image, mimeType);
-            
+            LOGGER.info("start");
             XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
             xhtml.startDocument();
             
-            xhtml.startElement("div", "class", "vlm-analysis");
-            xhtml.startElement("h2");
-            xhtml.characters("Vision Language Model Analysis");
-            xhtml.endElement("h2");
-            
-            xhtml.startElement("p");
             xhtml.characters(analysis);
-            xhtml.endElement("p");
             
             metadata.add("vlm_provider", provider);
             metadata.add("vlm_model", modelName);
             metadata.add("vlm_prompt", prompt);
             metadata.add("vlm_analysis", analysis);
-            
-            extractAndAddEntities(analysis, metadata, xhtml);
-            
-            xhtml.endElement("div");
+                        
             xhtml.endDocument();
-            
+            LOGGER.info("END");
         } catch (Exception e) {
             throw new TikaException("Failed to analyze image with VLM", e);
         }
