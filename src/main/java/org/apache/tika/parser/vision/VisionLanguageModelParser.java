@@ -238,8 +238,8 @@ public class VisionLanguageModelParser extends AbstractParser {
         }
 
         try {
-            String analysis = callVisionAPI(base64Image, mimeType);
             LOGGER.info("start");
+            // String analysis = callVisionAPI(base64Image, mimeType);
             XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
             xhtml.startDocument();
             
