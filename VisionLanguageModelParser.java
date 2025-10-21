@@ -1,7 +1,5 @@
 package org.apache.tika.parser.vision;
 
-
-
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -241,26 +239,13 @@ public class VisionLanguageModelParser extends AbstractParser {
 
         try {
             LOGGER.info("start");
+            String analysis = "HI VISION";
             // String analysis = callVisionAPI(base64Image, mimeType);
-            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
-            xhtml.startDocument();
-            
-            xhtml.startElement("div", "class", "vlm-analysis");
-            xhtml.startElement("h2");
-            xhtml.characters("Vision Language Model Analysis");
-            xhtml.endElement("h2");
-            
-            xhtml.startElement("p");
-            xhtml.characters(analysis);
-            xhtml.endElement("p");
-            
-            metadata.add("vlm_provider", provider);
-            metadata.add("vlm_model", modelName);
-            metadata.add("vlm_prompt", prompt);
-            metadata.add("vlm_analysis", analysis);
-                        
-            xhtml.endElement("div");
-            xhtml.endDocument();
+             // *** כותבים רק למטה-דאטה של ה-embedded ***
+            metadata.set("vlm:provider", provider);
+            metadata.set("vlm:model", modelName);
+            metadata.set("vlm:prompt", prompt);
+            metadata.set("vlm:analysis", analysis);
             LOGGER.info("END");
         } catch (Exception e) {
             throw new TikaException("Failed to analyze image with VLM", e);
