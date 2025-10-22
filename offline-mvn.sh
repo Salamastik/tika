@@ -12,3 +12,14 @@ echo "All dependencies downloaded. You can now build offline with 'mvn -o packag
 mvn -o clean package
 
 ~/.m2/repository
+
+
+
+
+
+
+
+
+
+
+ docker run -p 9998:9998 -v $(pwd)/config.xml:/config.xml -e TIKA_VLM_ENDPOINT='g' -e TIKA_VLM_API_KEY='h' g:g12 -c /config.xml
