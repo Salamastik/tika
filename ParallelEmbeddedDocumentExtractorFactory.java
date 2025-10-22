@@ -122,7 +122,7 @@ public class ParallelEmbeddedDocumentExtractorFactory implements EmbeddedDocumen
                 final String path = normalizePath(mdCopy);
                 final String placeholder = "{{VLM_PLACEHOLDER_" + sanitizePath(path) + "}}";
 
-                final Parser p = embeddedParser
+                final Parser p = embeddedParser;
                 // 1. Write placeholder IMMEDIATELY (no blocking!)
                 safeWriteText(handler, "\n" + placeholder + "\n");
                 LOGGER.info("[Factory] Wrote placeholder for {}", path);
