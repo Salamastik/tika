@@ -79,7 +79,7 @@ public class ParallelEmbeddedDocumentExtractorFactory implements EmbeddedDocumen
 
     @Override
     public EmbeddedDocumentExtractor newInstance(Metadata parentMd, ParseContext context) {
-        final Parser embeddedParserTemplate = Objects.requireNonNullElseGet(
+        final Parser embeddedParser = Objects.requireNonNullElseGet(
                 context.get(Parser.class), AutoDetectParser::new);
 
         final ParsingEmbeddedDocumentExtractor delegate =
@@ -122,6 +122,7 @@ public class ParallelEmbeddedDocumentExtractorFactory implements EmbeddedDocumen
                 final String path = normalizePath(mdCopy);
                 final String placeholder = "{{VLM_PLACEHOLDER_" + sanitizePath(path) + "}}";
 
+                final Parser p = embeddedParser
                 // 1. Write placeholder IMMEDIATELY (no blocking!)
                 safeWriteText(handler, "\n" + placeholder + "\n");
                 LOGGER.info("[Factory] Wrote placeholder for {}", path);
@@ -130,12 +131,7 @@ public class ParallelEmbeddedDocumentExtractorFactory implements EmbeddedDocumen
                 CompletableFuture<Metadata> fut = CompletableFuture.supplyAsync(() -> {
                     LOGGER.info("[Factory] Processing {} (thread={})", path, Thread.currentThread().getName());
                     try (ByteArrayInputStream bais = new ByteArrayInputStream(data)) {
-                        Parser p;
-                        try {
-                            p = new AutoDetectParser(TikaConfig.getDefaultConfig());
-                        } catch (Exception ex) {
-                            p = new AutoDetectParser();
-                        }
+                        
                         ParseContext ctxForTask = new ParseContext();
                         try {
                             p.parse(bais, new DefaultHandler(), mdCopy, ctxForTask);
