@@ -1,333 +1,405 @@
 // ParallelEmbeddedDocumentExtractorFactory.java
 package org.apache.tika.parallel;
 
-import org.apache.tika.extractor.EmbeddedDocumentExtractor;
-import org.apache.tika.extractor.EmbeddedDocumentExtractorFactory;
+import org.apache.tika.config.TikaConfig;
+import org.apache.tika.exception.TikaException;
 import org.apache.tika.extractor.ParsingEmbeddedDocumentExtractor;
+import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
+import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
-import org.apache.tika.config.TikaConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.tika.sax.BodyContentHandler;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
-import org.xml.sax.helpers.DefaultHandler;
-import org.xml.sax.helpers.AttributesImpl;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Parallel EmbeddedDocumentExtractorFactory with PLACEHOLDER injection.
- * Writes placeholders immediately, replaces them at the end with actual results.
+ * ParallelEmbeddedDocumentExtractor - מעבד רכיבים מוטמעים במקביל
+ * 
+ * עיבוד מקבילי של תמונות, קבצים מצורפים, ומסמכים מוטמעים אחרים
+ * ללא שינוי קוד המקור של Tika.
+ * 
+ * @author Your Name
+ * @version 1.0.0
  */
-public class ParallelEmbeddedDocumentExtractorFactory implements EmbeddedDocumentExtractorFactory {
-
-    private static final Logger LOGGER =
-            LoggerFactory.getLogger(ParallelEmbeddedDocumentExtractorFactory.class);
-
-    // Shared executor
-    private static final int CONCURRENCY = Integer.parseInt(
-            System.getProperty("tika.vlm.threads",
-                    System.getenv().getOrDefault("TIKA_VLM_THREADS", "6"))
-    );
-
-    private static final ExecutorService EXEC = new ThreadPoolExecutor(
-            CONCURRENCY, CONCURRENCY,
-            30L, TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(1024),
-            r -> {
-                Thread t = new Thread(r, "vlm-worker-" + System.nanoTime());
-                t.setDaemon(true);
-                return t;
-            },
-            new ThreadPoolExecutor.CallerRunsPolicy()
-    );
-
-    static {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            LOGGER.info("[Factory] Shutting down executor");
-            EXEC.shutdown();
-            try {
-                if (!EXEC.awaitTermination(10, TimeUnit.SECONDS)) {
-                    EXEC.shutdownNow();
-                }
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
-        }));
-    }
-
-    private static final long DEFAULT_MAX_EMBED_BYTES = Long.parseLong(
-            System.getProperty("tika.vlm.maxEmbedBytes",
-                    System.getenv().getOrDefault("TIKA_VLM_MAX_EMBED_BYTES", "10485760"))
-    );
+public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentExtractor {
     
-    private static final long DEFAULT_WAIT_ALL_MS = Long.parseLong(
-            System.getProperty("tika.vlm.waitAllMs",
-                    System.getenv().getOrDefault("TIKA_VLM_WAIT_ALL_MS", "60000")) // 60s for all
-    );
-
-    // ===== GLOBAL STATE (ThreadLocal for thread-safety) =====
-    private static final ThreadLocal<Map<String, PendingEmbed>> REQUEST_EMBEDS =
-            ThreadLocal.withInitial(LinkedHashMap::new); // LinkedHashMap keeps insertion order
-
+    // הגדרות ברירת מחדל
+    private static final int DEFAULT_THREADS = Runtime.getRuntime().availableProcessors();
+    private static final long DEFAULT_MAX_SIZE_MB = 50;
+    private static final long DEFAULT_TIMEOUT_SECONDS = 300;
+    
+    // ThreadPool לעיבוד מקבילי
+    private final ExecutorService executorService;
+    
+    // רשימת המשימות הפעילות
+    private final List<Future<EmbeddedResult>> activeTasks;
+    
+    // counter לתיוג רכיבים
+    private final AtomicInteger embeddedCounter;
+    
+    // הגדרות
+    private final int numThreads;
+    private final long maxSizeBytes;
+    private final long timeoutSeconds;
+    
+    // לוג
+    private final boolean debug;
+    
+    // Parser instance
+    private final Parser parser;
+    
+    /**
+     * Constructor
+     */
+    public ParallelEmbeddedDocumentExtractor(ParseContext context) {
+        super(context);
+        
+        // שמירת parser מה-context
+        this.parser = context.get(Parser.class);
+        
+        // קריאת הגדרות מ-environment variables או system properties
+        this.numThreads = getConfigInt("tika.parallel.threads", DEFAULT_THREADS);
+        long maxSizeMB = getConfigLong("tika.parallel.maxSizeMB", DEFAULT_MAX_SIZE_MB);
+        this.maxSizeBytes = maxSizeMB * 1024 * 1024;
+        this.timeoutSeconds = getConfigLong("tika.parallel.timeoutSeconds", DEFAULT_TIMEOUT_SECONDS);
+        this.debug = getConfigBoolean("tika.parallel.debug", false);
+        
+        // יצירת ThreadPool
+        this.executorService = Executors.newFixedThreadPool(numThreads, new ThreadFactory() {
+            private final AtomicInteger threadCounter = new AtomicInteger(1);
+            
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread thread = new Thread(r, "tika-parallel-" + threadCounter.getAndIncrement());
+                thread.setDaemon(true);
+                return thread;
+            }
+        });
+        
+        this.activeTasks = new CopyOnWriteArrayList<>();
+        this.embeddedCounter = new AtomicInteger(0);
+        
+        if (debug) {
+            System.out.println("[ParallelExtractor] Initialized with " + numThreads + " threads");
+            System.out.println("[ParallelExtractor] Max size: " + maxSizeMB + "MB");
+        }
+    }
+    
+    /**
+     * עיבוד רכיב מוטמע - יבצע במקביל
+     */
     @Override
-    public EmbeddedDocumentExtractor newInstance(Metadata parentMd, ParseContext context) {
-        final Parser embeddedParser = Objects.requireNonNullElseGet(
-                context.get(Parser.class), AutoDetectParser::new);
-
-        final ParsingEmbeddedDocumentExtractor delegate =
-                new ParsingEmbeddedDocumentExtractor(context);
-
-        LOGGER.info("[Factory] newInstance created");
-
-        return new EmbeddedDocumentExtractor() {
-            @Override
-            public boolean shouldParseEmbedded(Metadata metadata) {
-                boolean should = delegate.shouldParseEmbedded(metadata);
-                if (!should) {
-                    LOGGER.debug("[Factory] shouldParseEmbedded=false for {}", metadata.get("resourceName"));
-                }
-                return should;
-            }
-
-            @Override
-            public void parseEmbedded(InputStream stream,
-                                      ContentHandler handler,
-                                      Metadata metadata,
-                                      boolean outputHtml) throws SAXException, IOException {
-                
-                // Read into memory
-                final byte[] data;
-                try {
-                    data = stream.readAllBytes();
-                } catch (IOException e) {
-                    LOGGER.warn("[Factory] Failed to read {}", metadata.get("resourceName"), e);
-                    return;
-                }
-
-                if (data.length > DEFAULT_MAX_EMBED_BYTES) {
-                    LOGGER.warn("[Factory] Embed too large ({} bytes) for {}", 
-                        data.length, metadata.get("resourceName"));
-                    return;
-                }
-
-                final Metadata mdCopy = copyMetadata(metadata);
-                final String path = normalizePath(mdCopy);
-                final String placeholder = "{{VLM_PLACEHOLDER_" + sanitizePath(path) + "}}";
-
-                final Parser p = embeddedParser;
-                // 1. Write placeholder IMMEDIATELY (no blocking!)
-                safeWriteText(handler, "\n" + placeholder + "\n");
-                LOGGER.info("[Factory] Wrote placeholder for {}", path);
-
-                // 2. Schedule async parsing
-                CompletableFuture<Metadata> fut = CompletableFuture.supplyAsync(() -> {
-                    LOGGER.info("[Factory] Processing {} (thread={})", path, Thread.currentThread().getName());
-                    try (ByteArrayInputStream bais = new ByteArrayInputStream(data)) {
-                        
-                        ParseContext ctxForTask = new ParseContext();
-                        try {
-                            p.parse(bais, new DefaultHandler(), mdCopy, ctxForTask);
-                        } catch (Exception e) {
-                            mdCopy.add("vlm:error", "parse-failed:" + e.getClass().getSimpleName());
-                            LOGGER.warn("[Factory] Parse error for {} – {}", path, e.toString());
-                        }
-                    } catch (Exception e) {
-                        mdCopy.add("vlm:error", "stream-failed");
-                        LOGGER.warn("[Factory] Stream error for {} – {}", path, e.toString());
-                    }
-                    LOGGER.info("[Factory] Completed {} (vlm:analysis present: {})", 
-                        path, mdCopy.get("vlm:analysis") != null);
-                    return mdCopy;
-                }, EXEC);
-
-                // 3. Store for later replacement
-                REQUEST_EMBEDS.get().put(path, new PendingEmbed(placeholder, fut, path));
-                
-                LOGGER.debug("[Factory] Queued {} for async processing (total: {})", 
-                    path, REQUEST_EMBEDS.get().size());
-            }
-        };
-    }
-
-    // ===== PUBLIC STATIC METHODS FOR COORDINATION =====
-
-    /**
-     * Wait for all pending embeds to complete (called before getReplacements).
-     */
-    public static void awaitAll() {
-        Map<String, PendingEmbed> embeds = REQUEST_EMBEDS.get();
-        
-        if (embeds.isEmpty()) {
-            LOGGER.info("[Factory] No embeds to await");
-            return;
-        }
-
-        LOGGER.info("[Factory] Awaiting {} embeds to complete...", embeds.size());
-        long startTime = System.currentTimeMillis();
-
-        CompletableFuture<Void> allDone = CompletableFuture.allOf(
-            embeds.values().stream()
-                .map(pe -> pe.future)
-                .toArray(CompletableFuture[]::new)
-        );
-
-        try {
-            allDone.get(DEFAULT_WAIT_ALL_MS, TimeUnit.MILLISECONDS);
-            long elapsed = System.currentTimeMillis() - startTime;
-            LOGGER.info("[Factory] All {} embeds completed in {} ms", embeds.size(), elapsed);
-        } catch (TimeoutException e) {
-            LOGGER.warn("[Factory] Timeout after {} ms waiting for embeds", DEFAULT_WAIT_ALL_MS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            LOGGER.error("[Factory] Interrupted while waiting");
-        } catch (ExecutionException e) {
-            LOGGER.error("[Factory] Execution error while waiting", e);
-        }
-    }
-
-    /**
-     * Returns a map of placeholder -> replacement text for all completed embeds.
-     * Must call awaitAll() first!
-     */
-    public static Map<String, String> getReplacements() {
-        Map<String, PendingEmbed> embeds = REQUEST_EMBEDS.get();
-        
-        if (embeds.isEmpty()) {
-            LOGGER.info("[Factory] No embeds to process");
-            cleanup();
-            return Collections.emptyMap();
-        }
-
-        LOGGER.info("[Factory] Building replacements for {} embeds", embeds.size());
-        long startTime = System.currentTimeMillis();
-
-        Map<String, String> replacements = new LinkedHashMap<>();
-
-        // Build replacement map (all futures should be done now)
-        for (PendingEmbed pe : embeds.values()) {
+    public boolean shouldParseEmbedded(Metadata metadata) {
+        // בדיקת גודל
+        String lengthStr = metadata.get(Metadata.CONTENT_LENGTH);
+        if (lengthStr != null) {
             try {
-                if (pe.future.isDone() && !pe.future.isCompletedExceptionally()) {
-                    Metadata result = pe.future.get(100, TimeUnit.MILLISECONDS); // Quick get
-                    replacements.put(pe.placeholder, buildReplacementText(pe.path, result));
-                } else if (pe.future.isCompletedExceptionally()) {
-                    replacements.put(pe.placeholder, buildErrorText(pe.path));
-                } else {
-                    // Still not done after awaitAll? Mark as timeout
-                    replacements.put(pe.placeholder, buildTimeoutText(pe.path));
+                long length = Long.parseLong(lengthStr);
+                if (length > maxSizeBytes) {
+                    if (debug) {
+                        System.out.println("[ParallelExtractor] Skipping large embedded: " + 
+                            metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY) + " (" + length + " bytes)");
+                    }
+                    return false;
+                }
+            } catch (NumberFormatException e) {
+                // ignore
+            }
+        }
+        
+        return super.shouldParseEmbedded(metadata);
+    }
+    
+    /**
+     * עיבוד רכיב מוטמע - הגרסה המקבילית
+     */
+    @Override
+    public void parseEmbedded(
+            InputStream stream,
+            ContentHandler handler,
+            Metadata metadata,
+            boolean outputHtml) throws SAXException, IOException {
+        
+        // יצירת ID ייחודי
+        int embeddedId = embeddedCounter.incrementAndGet();
+        
+        // שמירת ערכים כ-final למשתנה הlambda
+        final String resourceName = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY) != null 
+            ? metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY) 
+            : "embedded-" + embeddedId;
+        final Metadata metadataFinal = metadata;
+        final boolean outputHtmlFinal = outputHtml;
+        final ContentHandler handlerFinal = handler;
+        
+        if (debug) {
+            System.out.println("[ParallelExtractor] Processing embedded #" + embeddedId + ": " + resourceName);
+        }
+        
+        // קריאת הstream לזיכרון (צריך לשמור אותו לעיבוד async)
+        byte[] data = readStreamToBytes(stream);
+        
+        // יצירת משימה לעיבוד מקבילי
+        Future<EmbeddedResult> future = executorService.submit(() -> {
+            return processEmbeddedDocument(embeddedId, resourceName, data, metadataFinal, outputHtmlFinal, handlerFinal);
+        });
+        
+        // שמירת המשימה
+        activeTasks.add(future);
+        
+        // אם הגענו למספר גדול של משימות - נחכה לחלק מהן
+        if (activeTasks.size() > numThreads * 2) {
+            waitForSomeTasks();
+        }
+    }
+    
+    /**
+     * עיבוד מסמך מוטמע (מתבצע ב-thread נפרד)
+     */
+    private EmbeddedResult processEmbeddedDocument(
+            int embeddedId,
+            String resourceName,
+            byte[] data,
+            Metadata metadata,
+            boolean outputHtml,
+            ContentHandler handler) {
+        
+        long startTime = System.currentTimeMillis();
+        EmbeddedResult result = new EmbeddedResult();
+        result.id = embeddedId;
+        result.resourceName = resourceName;
+        result.metadata = metadata;
+        
+        try {
+            // יצירת InputStream מהdata
+            ByteArrayInputStream inputStream = new ByteArrayInputStream(data);
+            TikaInputStream tikaStream = TikaInputStream.get(inputStream);
+            
+            // יצירת handler לתוצאה
+            BodyContentHandler contentHandler = new BodyContentHandler(-1);
+            
+            // Parse context
+            ParseContext context = new ParseContext();
+            
+            // שימוש ב-parser המקורי
+            Parser parserToUse = this.parser;
+            if (parserToUse == null) {
+                // fallback - ננסה ליצור parser אוטומטית
+                parserToUse = new org.apache.tika.parser.AutoDetectParser();
+            }
+            context.set(Parser.class, parserToUse);
+            
+            // עיבוד המסמך
+            parserToUse.parse(tikaStream, contentHandler, metadata, context);
+            
+            result.content = contentHandler.toString();
+            result.success = true;
+            
+            // כתיבה ל-handler המקורי (חשוב!)
+            if (handler != null && result.content != null && !result.content.isEmpty()) {
+                try {
+                    handler.characters(result.content.toCharArray(), 0, result.content.length());
+                } catch (SAXException e) {
+                    if (debug) {
+                        System.err.println("[ParallelExtractor] Error writing to handler: " + e.getMessage());
+                    }
+                }
+            }
+            
+            if (debug) {
+                long elapsed = System.currentTimeMillis() - startTime;
+                System.out.println("[ParallelExtractor] Completed #" + embeddedId + 
+                    " (" + resourceName + ") in " + elapsed + "ms - " + result.content.length() + " chars");
+            }
+            
+        } catch (Exception e) {
+            result.success = false;
+            result.error = e.getMessage();
+            
+            if (debug) {
+                System.err.println("[ParallelExtractor] Error processing #" + embeddedId + 
+                    " (" + resourceName + "): " + e.getMessage());
+            }
+        }
+        
+        result.processingTimeMs = System.currentTimeMillis() - startTime;
+        return result;
+    }
+    
+    /**
+     * המתנה לחלק מהמשימות
+     */
+    private void waitForSomeTasks() {
+        List<Future<EmbeddedResult>> toRemove = new ArrayList<>();
+        
+        for (Future<EmbeddedResult> task : activeTasks) {
+            if (task.isDone()) {
+                toRemove.add(task);
+            }
+        }
+        
+        activeTasks.removeAll(toRemove);
+    }
+    
+    /**
+     * המתנה לכל המשימות (קוראים לזה בסוף)
+     */
+    public List<EmbeddedResult> waitForAllTasks() {
+        List<EmbeddedResult> results = new ArrayList<>();
+        
+        if (debug) {
+            System.out.println("[ParallelExtractor] Waiting for " + activeTasks.size() + " tasks...");
+        }
+        
+        for (Future<EmbeddedResult> task : activeTasks) {
+            try {
+                EmbeddedResult result = task.get(timeoutSeconds, TimeUnit.SECONDS);
+                results.add(result);
+            } catch (TimeoutException e) {
+                if (debug) {
+                    System.err.println("[ParallelExtractor] Task timeout");
                 }
             } catch (Exception e) {
-                LOGGER.warn("[Factory] Failed to get result for {}", pe.path, e);
-                replacements.put(pe.placeholder, buildErrorText(pe.path));
+                if (debug) {
+                    System.err.println("[ParallelExtractor] Task error: " + e.getMessage());
+                }
             }
         }
-
-        long elapsed = System.currentTimeMillis() - startTime;
-        LOGGER.info("[Factory] Built {} replacements in {} ms", replacements.size(), elapsed);
-
-        cleanup();
-        return replacements;
-    }
-
-    // ===== Helper Methods =====
-
-    private static void cleanup() {
-        REQUEST_EMBEDS.get().clear();
-        REQUEST_EMBEDS.remove();
-        LOGGER.debug("[Factory] Cleaned up ThreadLocal state");
-    }
-
-    private static String buildReplacementText(String path, Metadata md) {
-        StringBuilder sb = new StringBuilder();
-        String analysis = md.get("vlm:analysis");
-        String provider = md.get("vlm:provider");
-        String model = md.get("vlm:model");
-
-        sb.append("\n=== VLM Analysis for ").append(path).append(" ===\n");
-        if (analysis != null && !analysis.isEmpty()) {
-            sb.append(analysis).append("\n");
-        } else {
-            sb.append("(no analysis)\n");
-        }
-        sb.append("[provider=").append(String.valueOf(provider))
-          .append(", model=").append(String.valueOf(model))
-          .append("]\n");
         
-        return sb.toString();
-    }
-
-    private static String buildTimeoutText(String path) {
-        return "\n=== VLM Analysis TIMEOUT for " + path + " ===\n";
-    }
-
-    private static String buildErrorText(String path) {
-        return "\n=== VLM Analysis FAILED for " + path + " ===\n";
-    }
-
-    private static Metadata copyMetadata(Metadata src) {
-        Metadata dst = new Metadata();
-        for (String n : src.names()) {
-            dst.set(n, src.get(n));
+        activeTasks.clear();
+        
+        if (debug) {
+            System.out.println("[ParallelExtractor] All tasks completed. Results: " + results.size());
         }
-        return dst;
+        
+        return results;
     }
-
-    private static String normalizePath(Metadata md) {
-        String path = firstNonNull(
-                md.get("X-TIKA:final_embedded_resource_path"),
-                md.get("X-TIKA:embedded_resource_path"),
-                md.get("resourceName")
-        );
-        if (path == null) {
-            path = "__unknown_" + System.nanoTime();
+    
+    /**
+     * סגירת ה-ExecutorService
+     */
+    public void shutdown() {
+        waitForAllTasks();
+        executorService.shutdown();
+        
+        try {
+            if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
         }
-        if (path.startsWith("embedded:")) {
-            path = path.substring("embedded:".length());
+    }
+    
+    // Helper methods
+    
+    private byte[] readStreamToBytes(InputStream stream) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] data = new byte[8192];
+        int nRead;
+        
+        while ((nRead = stream.read(data, 0, data.length)) != -1) {
+            buffer.write(data, 0, nRead);
         }
-        if (!path.startsWith("/")) {
-            path = "/" + path;
+        
+        return buffer.toByteArray();
+    }
+    
+    private int getConfigInt(String key, int defaultValue) {
+        // ניסיון מ-system property
+        String value = System.getProperty(key);
+        if (value == null) {
+            // ניסיון מ-environment variable
+            value = System.getenv(key.toUpperCase().replace('.', '_'));
         }
-        return path;
-    }
-
-    private static String sanitizePath(String path) {
-        // Make path safe for use in placeholder (remove special chars)
-        return path.replaceAll("[^a-zA-Z0-9/_-]", "_");
-    }
-
-    private static String firstNonNull(String a, String b, String c) {
-        return a != null ? a : (b != null ? b : c);
-    }
-
-    private static void safeWriteText(ContentHandler h, String s) throws SAXException {
-        if (s == null || s.isEmpty()) return;
-        writeChars(h, s);
-    }
-
-    private static void writeChars(ContentHandler h, String s) throws SAXException {
-        if (s == null || s.isEmpty()) return;
-        char[] c = s.toCharArray();
-        h.characters(c, 0, c.length);
-    }
-
-    // ===== Inner Classes =====
-
-    static class PendingEmbed {
-        final String placeholder;
-        final CompletableFuture<Metadata> future;
-        final String path;
-
-        PendingEmbed(String placeholder, CompletableFuture<Metadata> future, String path) {
-            this.placeholder = placeholder;
-            this.future = future;
-            this.path = path;
+        
+        if (value != null) {
+            try {
+                return Integer.parseInt(value);
+            } catch (NumberFormatException e) {
+                // ignore
+            }
         }
+        
+        return defaultValue;
+    }
+    
+    private long getConfigLong(String key, long defaultValue) {
+        String value = System.getProperty(key);
+        if (value == null) {
+            value = System.getenv(key.toUpperCase().replace('.', '_'));
+        }
+        
+        if (value != null) {
+            try {
+                return Long.parseLong(value);
+            } catch (NumberFormatException e) {
+                // ignore
+            }
+        }
+        
+        return defaultValue;
+    }
+    
+    private boolean getConfigBoolean(String key, boolean defaultValue) {
+        String value = System.getProperty(key);
+        if (value == null) {
+            value = System.getenv(key.toUpperCase().replace('.', '_'));
+        }
+        
+        return value != null ? Boolean.parseBoolean(value) : defaultValue;
+    }
+    
+    /**
+     * תוצאת עיבוד רכיב מוטמע
+     */
+    public static class EmbeddedResult {
+        public int id;
+        public String resourceName;
+        public Metadata metadata;
+        public String content;
+        public boolean success;
+        public String error;
+        public long processingTimeMs;
+        
+        @Override
+        public String toString() {
+            return String.format("EmbeddedResult[id=%d, name=%s, success=%b, time=%dms]",
+                id, resourceName, success, processingTimeMs);
+        }
+    }
+}
+
+
+
+
+package org.apache.tika.parallel;
+
+import org.apache.tika.extractor.EmbeddedDocumentExtractor;
+import org.apache.tika.extractor.EmbeddedDocumentExtractorFactory;
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.ParseContext;
+
+/**
+ * Factory ליצירת ParallelEmbeddedDocumentExtractor
+ * Tika תשתמש בזה דרך tika-config.xml
+ */
+public class ParallelEmbeddedDocumentExtractorFactory implements EmbeddedDocumentExtractorFactory {
+    
+    @Override
+    public EmbeddedDocumentExtractor newInstance(Metadata metadata, ParseContext context) {
+        return new ParallelEmbeddedDocumentExtractor(context);
     }
 }
