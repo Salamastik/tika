@@ -1,41 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <properties>
-  <parsers>
-    <!-- DefaultParser לטיפול ברוב סוגי הקבצים, למעט תמונות שהורחקו -->
-    <parser class="org.apache.tika.parser.DefaultParser">
-      <!-- מניעת טיפול בתמונות על ידי ה-DefaultParser -->
-      <mime-exclude>image/jpeg</mime-exclude>
-      <mime-exclude>image/png</mime-exclude>
-      <mime-exclude>image/gif</mime-exclude>
-      <mime-exclude>image/webp</mime-exclude>
-      <mime-exclude>image/bmp</mime-exclude>
-      <!-- עוד חריגות אם יש צורך -->
-    </parser>
+<autoDetectParserConfig>
+  <embeddedDocumentExtractorFactory
+      class="org.apache.tika.parallel.ParallelEmbeddedDocumentExtractorFactory"/>
+</autoDetectParserConfig>
 
-    <!-- פארסר מותאם אישי לכל התמונות -->
-    <parser class="org.apache.tika.parser.vision.VisionLanguageModelParser">
-      <mime>image/jpeg</mime>
-      <mime>image/png</mime>
-      <mime>image/gif</mime>
-      <mime>image/webp</mime>
-      <mime>image/bmp</mime>
-      <!-- ניתן להוסיף עוד פורמטים של תמונה לפי הצורך -->
-    </parser>
 
-    <!-- הגדרת PDFParser עם הפעלת חילוץ תמונות מוטמעות -->
-    <parser class="org.apache.tika.parser.pdf.PDFParser">
-      <params>
-        <param name="extractInlineImages" type="bool">true</param>
-        <!-- אפשר להוסיף פרמטרים נוספים של PDFParser במידת הצורך -->
-      </params>
-    </parser>
-
-    <!-- (אופציונלי) אם יש צורך, ניתן להגדיר גם פרסרים אחרים כמו דפדוף על Office OOXML, לדוגמה:
-    <parser class="org.apache.tika.parser.microsoft.ooxml.OOXMLParser">
-      <params>
-        <param name="extractInlineImages" type="bool">true</param>
-      </params>
-    </parser>
-    -->
+<!-- הגדרות עיבוד מקבילי -->
+<properties>
+  <!-- מספר threads לעיבוד מקבילי (ברירת מחדל: מספר ליבות המעבד) -->
+  <property name="tika.parallel.threads">4</property>
+  
+  <!-- גודל מקסימלי לרכיב מוטמע במגהבייטים (ברירת מחדל: 50) -->
+  <property name="tika.parallel.maxSizeMB">50</property>
+</properties>
+<parsers>
+  <parser class="org.apache.tika.parser.DefaultParser"/>
+  <parser class="org.apache.tika.parser.vision.VisionLanguageModelParser">
+    <mime>image/jpeg</mime>
+    <mime>image/png</mime>
+    <mime>image/gif</mime>
+    <mime>image/webp</mime>
+    <mime>image/bmp</mime>
+  </parser>
   </parsers>
 </properties>
