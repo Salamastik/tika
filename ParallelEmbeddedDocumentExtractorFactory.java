@@ -43,8 +43,11 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     // ThreadPool לעיבוד מקבילי
     private final ExecutorService executorService;
     
-    // רשימת המשימות הפעילות
+    // רשימת המשימות הפעילות - עם סדר!
     private final List<Future<EmbeddedResult>> activeTasks;
+    
+    // תור של המשימות לפי סדר הגעה (לשמירת הסדר המקורי)
+    private final ConcurrentLinkedQueue<Future<EmbeddedResult>> orderedTasks;
     
     // counter לתיוג רכיבים
     private final AtomicInteger embeddedCounter;
@@ -59,6 +62,9 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     
     // Parser instance
     private final Parser parser;
+    
+    // Handler המקורי (לכתיבה בסוף)
+    private ContentHandler mainHandler;
     
     /**
      * Constructor
@@ -89,6 +95,7 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
         });
         
         this.activeTasks = new CopyOnWriteArrayList<>();
+        this.orderedTasks = new ConcurrentLinkedQueue<>();
         this.embeddedCounter = new AtomicInteger(0);
         
         if (debug) {
@@ -123,7 +130,9 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     /**
-     * עיבוד רכיב מוטמע - הגרסה המקבילית
+     * עיבוד רכיב מוטמע - הגרסה המקבילית עם שמירת סדר
+     * 
+     * העיבוד עצמו במקביל, אבל התוכן נכתב בסדר המקורי!
      */
     @Override
     public void parseEmbedded(
@@ -132,7 +141,7 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
             Metadata metadata,
             boolean outputHtml) throws SAXException, IOException {
         
-        // יצירת ID ייחודי
+        // יצירת ID ייחודי (זה גם הסדר!)
         int embeddedId = embeddedCounter.incrementAndGet();
         
         // שמירת ערכים כ-final למשתנה הlambda
@@ -143,8 +152,13 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
         final boolean outputHtmlFinal = outputHtml;
         final ContentHandler handlerFinal = handler;
         
+        // שמירת ה-handler הראשי (בפעם הראשונה)
+        if (this.mainHandler == null && handler != null) {
+            this.mainHandler = handler;
+        }
+        
         if (debug) {
-            System.out.println("[ParallelExtractor] Processing embedded #" + embeddedId + ": " + resourceName);
+            System.out.println("[ParallelExtractor] Submitting embedded #" + embeddedId + ": " + resourceName);
         }
         
         // קריאת הstream לזיכרון (צריך לשמור אותו לעיבוד async)
@@ -152,15 +166,118 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
         
         // יצירת משימה לעיבוד מקבילי
         Future<EmbeddedResult> future = executorService.submit(() -> {
-            return processEmbeddedDocument(embeddedId, resourceName, data, metadataFinal, outputHtmlFinal, handlerFinal);
+            return processEmbeddedDocument(embeddedId, resourceName, data, metadataFinal, outputHtmlFinal, null);
         });
         
-        // שמירת המשימה
+        // שמירת המשימה ברשימה לפי סדר הגעה!
+        orderedTasks.add(future);
         activeTasks.add(future);
         
-        // אם הגענו למספר גדול של משימות - נחכה לחלק מהן
-        if (activeTasks.size() > numThreads * 2) {
+        // נסה לכתוב תוצאות מוכנות בסדר
+        writeCompletedTasksInOrder(handlerFinal);
+        
+        // אם הגענו למספר גדול של משימות - נחכה קצת
+        if (activeTasks.size() > numThreads * 3) {
             waitForSomeTasks();
+            writeCompletedTasksInOrder(handlerFinal);
+        }
+    }
+    
+    /**
+     * נקרא אוטומטית על ידי Tika כאשר אין עוד embedded documents
+     * זה הזמן להמתין לכל המשימות שנשארו!
+     */
+    @Override
+    protected void finalize() throws Throwable {
+        try {
+            // אם נשארו משימות - נמתין להן ונכתוב
+            if (!orderedTasks.isEmpty() && mainHandler != null) {
+                if (debug) {
+                    System.out.println("[ParallelExtractor] finalize() - writing remaining " + 
+                        orderedTasks.size() + " tasks");
+                }
+                waitForAllTasks(mainHandler);
+            }
+        } catch (Exception e) {
+            if (debug) {
+                System.err.println("[ParallelExtractor] Error in finalize: " + e.getMessage());
+            }
+        } finally {
+            super.finalize();
+        }
+    }
+    
+    /**
+     * סיום העיבוד - כותב את כל הנותר!
+     */
+    public void finishProcessing() {
+        if (debug) {
+            System.out.println("[ParallelExtractor] finishProcessing() called - " + orderedTasks.size() + " tasks remaining");
+        }
+        
+        try {
+            waitForAllTasks(this.mainHandler);
+        } catch (SAXException e) {
+            if (debug) {
+                System.err.println("[ParallelExtractor] Error in finishProcessing: " + e.getMessage());
+            }
+        }
+    }
+    
+    /**
+     * כותב תוצאות שמוכנות, בסדר המקורי
+     * ✅ FIX: ממתין קצת למשימות אם צריך!
+     */
+    private void writeCompletedTasksInOrder(ContentHandler handler) throws SAXException {
+        // עובר על התור ומוציא רק משימות שהסתיימו
+        while (!orderedTasks.isEmpty()) {
+            Future<EmbeddedResult> nextTask = orderedTasks.peek();
+            
+            if (nextTask == null) {
+                orderedTasks.poll(); // הסר null
+                continue;
+            }
+            
+            // ✅ אם המשימה הבאה לא מוכנה, ננסה להמתין לה קצת
+            if (!nextTask.isDone()) {
+                // ננסה להמתין 100ms למשימה הראשונה
+                try {
+                    nextTask.get(100, TimeUnit.MILLISECONDS);
+                    // מוכנה! נמשיך לכתוב
+                } catch (TimeoutException e) {
+                    // עדיין לא מוכנה - נעצור כאן
+                    break;
+                } catch (Exception e) {
+                    if (debug) {
+                        System.err.println("[ParallelExtractor] Error waiting for task: " + e.getMessage());
+                    }
+                    orderedTasks.poll(); // הסר משימה שנכשלה
+                    activeTasks.remove(nextTask);
+                    continue;
+                }
+            }
+            
+            // המשימה מוכנה! נוציא אותה מהתור
+            orderedTasks.poll();
+            activeTasks.remove(nextTask);
+            
+            try {
+                EmbeddedResult result = nextTask.get();
+                
+                // כתיבת התוצאה ל-handler בסדר!
+                if (handler != null && result.content != null && !result.content.isEmpty()) {
+                    handler.characters(result.content.toCharArray(), 0, result.content.length());
+                    
+                    if (debug) {
+                        System.out.println("[ParallelExtractor] ✓ Wrote #" + result.id + 
+                            " (" + result.resourceName + ") - " + result.content.length() + " chars IN ORDER");
+                    }
+                }
+            } catch (Exception e) {
+                if (debug) {
+                    System.err.println("[ParallelExtractor] Error getting result: " + e.getMessage());
+                }
+            }
         }
     }
     
@@ -206,16 +323,7 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
             result.content = contentHandler.toString();
             result.success = true;
             
-            // כתיבה ל-handler המקורי (חשוב!)
-            if (handler != null && result.content != null && !result.content.isEmpty()) {
-                try {
-                    handler.characters(result.content.toCharArray(), 0, result.content.length());
-                } catch (SAXException e) {
-                    if (debug) {
-                        System.err.println("[ParallelExtractor] Error writing to handler: " + e.getMessage());
-                    }
-                }
-            }
+            // לא כותבים ל-handler כאן - זה יקרה ב-parseEmbedded בסדר הנכון!
             
             if (debug) {
                 long elapsed = System.currentTimeMillis() - startTime;
@@ -253,26 +361,39 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     /**
-     * המתנה לכל המשימות (קוראים לזה בסוף)
+     * המתנה לכל המשימות (קוראים לזה בסוף) - וכתיבה בסדר
      */
-    public List<EmbeddedResult> waitForAllTasks() {
+    public List<EmbeddedResult> waitForAllTasks(ContentHandler handler) throws SAXException {
         List<EmbeddedResult> results = new ArrayList<>();
         
         if (debug) {
-            System.out.println("[ParallelExtractor] Waiting for " + activeTasks.size() + " tasks...");
+            System.out.println("[ParallelExtractor] Waiting for remaining " + orderedTasks.size() + " tasks...");
         }
         
-        for (Future<EmbeddedResult> task : activeTasks) {
-            try {
-                EmbeddedResult result = task.get(timeoutSeconds, TimeUnit.SECONDS);
-                results.add(result);
-            } catch (TimeoutException e) {
-                if (debug) {
-                    System.err.println("[ParallelExtractor] Task timeout");
-                }
-            } catch (Exception e) {
-                if (debug) {
-                    System.err.println("[ParallelExtractor] Task error: " + e.getMessage());
+        // המתנה לכל המשימות שנותרו וכתיבה בסדר
+        while (!orderedTasks.isEmpty()) {
+            Future<EmbeddedResult> task = orderedTasks.poll();
+            if (task != null) {
+                try {
+                    EmbeddedResult result = task.get(timeoutSeconds, TimeUnit.SECONDS);
+                    results.add(result);
+                    
+                    // כתיבה בסדר
+                    if (handler != null && result.content != null && !result.content.isEmpty()) {
+                        handler.characters(result.content.toCharArray(), 0, result.content.length());
+                        
+                        if (debug) {
+                            System.out.println("[ParallelExtractor] ✓ Final write #" + result.id + " IN ORDER");
+                        }
+                    }
+                } catch (TimeoutException e) {
+                    if (debug) {
+                        System.err.println("[ParallelExtractor] Task timeout");
+                    }
+                } catch (Exception e) {
+                    if (debug) {
+                        System.err.println("[ParallelExtractor] Task error: " + e.getMessage());
+                    }
                 }
             }
         }
@@ -289,8 +410,8 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     /**
      * סגירת ה-ExecutorService
      */
-    public void shutdown() {
-        waitForAllTasks();
+    public void shutdown(ContentHandler handler) throws SAXException {
+        waitForAllTasks(handler);
         executorService.shutdown();
         
         try {
@@ -381,8 +502,6 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
         }
     }
 }
-
-
 
 
 package org.apache.tika.parallel;
