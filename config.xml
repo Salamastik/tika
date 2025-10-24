@@ -5,7 +5,6 @@
       class="org.apache.tika.parallel.ParallelEmbeddedDocumentExtractorFactory"/>
 </autoDetectParserConfig>
 
-
 <!-- הגדרות עיבוד מקבילי -->
 <properties>
   <!-- מספר threads לעיבוד מקבילי (ברירת מחדל: מספר ליבות המעבד) -->
@@ -22,6 +21,18 @@
     <mime>image/gif</mime>
     <mime>image/webp</mime>
     <mime>image/bmp</mime>
-  </parser>
+   </parser>
+  <parser class="org.apache.tika.parser.pdf.PDFParser">
+			<params>
+				<param name="extractInlineImages" type="bool">true</param>
+				<param name="extractUniqueInlineImagesOnly" type="bool">false</param>
+			</params>
+		</parser>
+
+    <parser class="org.apache.tika.parser.microsoft.ooxml.OOXMLParser">
+      <params>
+        <param name="extractInlineImages" type="bool">true</param>
+      </params>
+    </parser>
   </parsers>
 </properties>
