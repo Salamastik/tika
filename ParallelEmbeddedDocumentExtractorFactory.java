@@ -1,4 +1,3 @@
-// ParallelEmbeddedDocumentExtractorFactory.java
 package org.apache.tika.parallel;
 
 import org.apache.tika.config.TikaConfig;
@@ -12,6 +11,8 @@ import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -25,64 +26,40 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * ParallelEmbeddedDocumentExtractor - מעבד רכיבים מוטמעים במקביל
+ * Parallel Embedded Document Extractor
  * 
- * עיבוד מקבילי של תמונות, קבצים מצורפים, ומסמכים מוטמעים אחרים
- * ללא שינוי קוד המקור של Tika.
+ * Processes embedded documents (images, attachments, etc.) in parallel
+ * while preserving their original order in the output.
  * 
- * @author Your Name
  * @version 1.0.0
  */
 public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentExtractor {
     
-    // הגדרות ברירת מחדל
     private static final int DEFAULT_THREADS = Runtime.getRuntime().availableProcessors();
     private static final long DEFAULT_MAX_SIZE_MB = 50;
     private static final long DEFAULT_TIMEOUT_SECONDS = 300;
     
-    // ThreadPool לעיבוד מקבילי
     private final ExecutorService executorService;
-    
-    // רשימת המשימות הפעילות - עם סדר!
     private final List<Future<EmbeddedResult>> activeTasks;
-    
-    // תור של המשימות לפי סדר הגעה (לשמירת הסדר המקורי)
     private final ConcurrentLinkedQueue<Future<EmbeddedResult>> orderedTasks;
-    
-    // counter לתיוג רכיבים
     private final AtomicInteger embeddedCounter;
-    
-    // הגדרות
     private final int numThreads;
     private final long maxSizeBytes;
     private final long timeoutSeconds;
-    
-    // לוג
     private final boolean debug;
-    
-    // Parser instance
     private final Parser parser;
-    
-    // Handler המקורי (לכתיבה בסוף)
     private ContentHandler mainHandler;
     
-    /**
-     * Constructor
-     */
     public ParallelEmbeddedDocumentExtractor(ParseContext context) {
         super(context);
         
-        // שמירת parser מה-context
         this.parser = context.get(Parser.class);
-        
-        // קריאת הגדרות מ-environment variables או system properties
         this.numThreads = getConfigInt("tika.parallel.threads", DEFAULT_THREADS);
         long maxSizeMB = getConfigLong("tika.parallel.maxSizeMB", DEFAULT_MAX_SIZE_MB);
         this.maxSizeBytes = maxSizeMB * 1024 * 1024;
         this.timeoutSeconds = getConfigLong("tika.parallel.timeoutSeconds", DEFAULT_TIMEOUT_SECONDS);
         this.debug = getConfigBoolean("tika.parallel.debug", false);
         
-        // יצירת ThreadPool
         this.executorService = Executors.newFixedThreadPool(numThreads, new ThreadFactory() {
             private final AtomicInteger threadCounter = new AtomicInteger(1);
             
@@ -104,12 +81,8 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
         }
     }
     
-    /**
-     * עיבוד רכיב מוטמע - יבצע במקביל
-     */
     @Override
     public boolean shouldParseEmbedded(Metadata metadata) {
-        // בדיקת גודל
         String lengthStr = metadata.get(Metadata.CONTENT_LENGTH);
         if (lengthStr != null) {
             try {
@@ -130,9 +103,8 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     /**
-     * עיבוד רכיב מוטמע - הגרסה המקבילית עם שמירת סדר
-     * 
-     * העיבוד עצמו במקביל, אבל התוכן נכתב בסדר המקורי!
+     * Parse embedded document in parallel while preserving order.
+     * Processing happens concurrently, but output is written in original order.
      */
     @Override
     public void parseEmbedded(
@@ -141,10 +113,8 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
             Metadata metadata,
             boolean outputHtml) throws SAXException, IOException {
         
-        // יצירת ID ייחודי (זה גם הסדר!)
         int embeddedId = embeddedCounter.incrementAndGet();
         
-        // שמירת ערכים כ-final למשתנה הlambda
         final String resourceName = metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY) != null 
             ? metadata.get(TikaCoreProperties.RESOURCE_NAME_KEY) 
             : "embedded-" + embeddedId;
@@ -152,7 +122,6 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
         final boolean outputHtmlFinal = outputHtml;
         final ContentHandler handlerFinal = handler;
         
-        // שמירת ה-handler הראשי (בפעם הראשונה)
         if (this.mainHandler == null && handler != null) {
             this.mainHandler = handler;
         }
@@ -161,22 +130,17 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
             System.out.println("[ParallelExtractor] Submitting embedded #" + embeddedId + ": " + resourceName);
         }
         
-        // קריאת הstream לזיכרון (צריך לשמור אותו לעיבוד async)
         byte[] data = readStreamToBytes(stream);
         
-        // יצירת משימה לעיבוד מקבילי
         Future<EmbeddedResult> future = executorService.submit(() -> {
             return processEmbeddedDocument(embeddedId, resourceName, data, metadataFinal, outputHtmlFinal, null);
         });
         
-        // שמירת המשימה ברשימה לפי סדר הגעה!
         orderedTasks.add(future);
         activeTasks.add(future);
         
-        // נסה לכתוב תוצאות מוכנות בסדר
         writeCompletedTasksInOrder(handlerFinal);
         
-        // אם הגענו למספר גדול של משימות - נחכה קצת
         if (activeTasks.size() > numThreads * 3) {
             waitForSomeTasks();
             writeCompletedTasksInOrder(handlerFinal);
@@ -184,31 +148,7 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     /**
-     * נקרא אוטומטית על ידי Tika כאשר אין עוד embedded documents
-     * זה הזמן להמתין לכל המשימות שנשארו!
-     */
-    @Override
-    protected void finalize() throws Throwable {
-        try {
-            // אם נשארו משימות - נמתין להן ונכתוב
-            if (!orderedTasks.isEmpty() && mainHandler != null) {
-                if (debug) {
-                    System.out.println("[ParallelExtractor] finalize() - writing remaining " + 
-                        orderedTasks.size() + " tasks");
-                }
-                waitForAllTasks(mainHandler);
-            }
-        } catch (Exception e) {
-            if (debug) {
-                System.err.println("[ParallelExtractor] Error in finalize: " + e.getMessage());
-            }
-        } finally {
-            super.finalize();
-        }
-    }
-    
-    /**
-     * סיום העיבוד - כותב את כל הנותר!
+     * Finish processing and write all remaining results.
      */
     public void finishProcessing() {
         if (debug) {
@@ -225,46 +165,39 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     /**
-     * כותב תוצאות שמוכנות, בסדר המקורי
-     * ✅ FIX: ממתין קצת למשימות אם צריך!
+     * Write completed tasks in their original order.
+     * Waits briefly for next task if needed.
      */
     private void writeCompletedTasksInOrder(ContentHandler handler) throws SAXException {
-        // עובר על התור ומוציא רק משימות שהסתיימו
         while (!orderedTasks.isEmpty()) {
             Future<EmbeddedResult> nextTask = orderedTasks.peek();
             
             if (nextTask == null) {
-                orderedTasks.poll(); // הסר null
+                orderedTasks.poll();
                 continue;
             }
             
-            // ✅ אם המשימה הבאה לא מוכנה, ננסה להמתין לה קצת
             if (!nextTask.isDone()) {
-                // ננסה להמתין 100ms למשימה הראשונה
                 try {
                     nextTask.get(100, TimeUnit.MILLISECONDS);
-                    // מוכנה! נמשיך לכתוב
                 } catch (TimeoutException e) {
-                    // עדיין לא מוכנה - נעצור כאן
                     break;
                 } catch (Exception e) {
                     if (debug) {
                         System.err.println("[ParallelExtractor] Error waiting for task: " + e.getMessage());
                     }
-                    orderedTasks.poll(); // הסר משימה שנכשלה
+                    orderedTasks.poll();
                     activeTasks.remove(nextTask);
                     continue;
                 }
             }
             
-            // המשימה מוכנה! נוציא אותה מהתור
             orderedTasks.poll();
             activeTasks.remove(nextTask);
             
             try {
                 EmbeddedResult result = nextTask.get();
                 
-                // כתיבת התוצאה ל-handler בסדר!
                 if (handler != null && result.content != null && !result.content.isEmpty()) {
                     handler.characters(result.content.toCharArray(), 0, result.content.length());
                     
@@ -282,7 +215,7 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     /**
-     * עיבוד מסמך מוטמע (מתבצע ב-thread נפרד)
+     * Process embedded document (runs in separate thread).
      */
     private EmbeddedResult processEmbeddedDocument(
             int embeddedId,
@@ -299,31 +232,21 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
         result.metadata = metadata;
         
         try {
-            // יצירת InputStream מהdata
             ByteArrayInputStream inputStream = new ByteArrayInputStream(data);
             TikaInputStream tikaStream = TikaInputStream.get(inputStream);
-            
-            // יצירת handler לתוצאה
             BodyContentHandler contentHandler = new BodyContentHandler(-1);
-            
-            // Parse context
             ParseContext context = new ParseContext();
             
-            // שימוש ב-parser המקורי
             Parser parserToUse = this.parser;
             if (parserToUse == null) {
-                // fallback - ננסה ליצור parser אוטומטית
                 parserToUse = new org.apache.tika.parser.AutoDetectParser();
             }
             context.set(Parser.class, parserToUse);
             
-            // עיבוד המסמך
             parserToUse.parse(tikaStream, contentHandler, metadata, context);
             
             result.content = contentHandler.toString();
             result.success = true;
-            
-            // לא כותבים ל-handler כאן - זה יקרה ב-parseEmbedded בסדר הנכון!
             
             if (debug) {
                 long elapsed = System.currentTimeMillis() - startTime;
@@ -346,7 +269,7 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     /**
-     * המתנה לחלק מהמשימות
+     * Wait for some tasks to complete.
      */
     private void waitForSomeTasks() {
         List<Future<EmbeddedResult>> toRemove = new ArrayList<>();
@@ -361,7 +284,7 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     /**
-     * המתנה לכל המשימות (קוראים לזה בסוף) - וכתיבה בסדר
+     * Wait for all tasks and write results in order.
      */
     public List<EmbeddedResult> waitForAllTasks(ContentHandler handler) throws SAXException {
         List<EmbeddedResult> results = new ArrayList<>();
@@ -370,7 +293,6 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
             System.out.println("[ParallelExtractor] Waiting for remaining " + orderedTasks.size() + " tasks...");
         }
         
-        // המתנה לכל המשימות שנותרו וכתיבה בסדר
         while (!orderedTasks.isEmpty()) {
             Future<EmbeddedResult> task = orderedTasks.poll();
             if (task != null) {
@@ -378,7 +300,6 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
                     EmbeddedResult result = task.get(timeoutSeconds, TimeUnit.SECONDS);
                     results.add(result);
                     
-                    // כתיבה בסדר
                     if (handler != null && result.content != null && !result.content.isEmpty()) {
                         handler.characters(result.content.toCharArray(), 0, result.content.length());
                         
@@ -408,7 +329,7 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     /**
-     * סגירת ה-ExecutorService
+     * Shutdown the executor service.
      */
     public void shutdown(ContentHandler handler) throws SAXException {
         waitForAllTasks(handler);
@@ -424,8 +345,6 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
         }
     }
     
-    // Helper methods
-    
     private byte[] readStreamToBytes(InputStream stream) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         byte[] data = new byte[8192];
@@ -439,10 +358,8 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     private int getConfigInt(String key, int defaultValue) {
-        // ניסיון מ-system property
         String value = System.getProperty(key);
         if (value == null) {
-            // ניסיון מ-environment variable
             value = System.getenv(key.toUpperCase().replace('.', '_'));
         }
         
@@ -484,7 +401,7 @@ public class ParallelEmbeddedDocumentExtractor extends ParsingEmbeddedDocumentEx
     }
     
     /**
-     * תוצאת עיבוד רכיב מוטמע
+     * Result of processing an embedded document.
      */
     public static class EmbeddedResult {
         public int id;
@@ -512,8 +429,8 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 
 /**
- * Factory ליצירת ParallelEmbeddedDocumentExtractor
- * Tika תשתמש בזה דרך tika-config.xml
+ * Factory for creating ParallelEmbeddedDocumentExtractor instances.
+ * Used by Tika via tika-config.xml configuration.
  */
 public class ParallelEmbeddedDocumentExtractorFactory implements EmbeddedDocumentExtractorFactory {
     
