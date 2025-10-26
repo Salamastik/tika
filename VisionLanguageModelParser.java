@@ -45,6 +45,20 @@ import com.fasterxml.jackson.databind.JsonNode;
 /**
  * Custom Tika Parser that integrates with Vision Language Models
  * Supports OpenAI GPT-4 Vision, Anthropic Claude, and custom VLM endpoints
+ * 
+ * <h3>Logging:</h3>
+ * This parser uses SLF4J logger. To see DEBUG logs:
+ * <ul>
+ * <li>Configure your logging framework (logback, log4j2, etc.)</li>
+ * <li>Set logger level to DEBUG for: org.apache.tika.parser.vision.VisionLanguageModelParser</li>
+ * </ul>
+ * 
+ * Example logback.xml:
+ * <pre>
+ * &lt;logger name="org.apache.tika.parser.vision" level="DEBUG"/&gt;
+ * </pre>
+ * 
+ * By default, only WARN and ERROR logs are shown.
  */
 public class VisionLanguageModelParser extends AbstractParser {
 
@@ -59,7 +73,7 @@ public class VisionLanguageModelParser extends AbstractParser {
     private String prompt;
     private int maxImageSize = 20 * 1024 * 1024;
     private int timeout = 30;
-    private String customCertificate; // הסרטיפיקט כמחרוזת
+    private String customCertificate;
     
     private static final String DEFAULT_PROMPT = "Please analyze this image and provide a detailed description " +
                                                "including: 1) Main subjects and objects, 2) Text content if any, " +
@@ -96,7 +110,6 @@ public class VisionLanguageModelParser extends AbstractParser {
                      System.getenv("TIKA_VLM_PROMPT") != null ? 
                      System.getenv("TIKA_VLM_PROMPT") : DEFAULT_PROMPT);
         
-        // טעינת הסרטיפיקט ממשתנה סביבה או system property
         this.customCertificate = System.getProperty("tika.vlm.certificate",
                                 System.getenv("TIKA_VLM_CERTIFICATE"));
         
@@ -137,7 +150,6 @@ public class VisionLanguageModelParser extends AbstractParser {
                 ));
             }
             
-            // אם יש סרטיפיקט מותאם אישית, טען אותו
             if (customCertificate != null && !customCertificate.trim().isEmpty()) {
                 SSLContext sslContext = createSSLContextWithCustomCert(customCertificate);
                 builder.sslContext(sslContext);
@@ -160,43 +172,36 @@ public class VisionLanguageModelParser extends AbstractParser {
     }
 
     /**
-     * יוצר SSLContext עם סרטיפיקט מותאם אישית מתוך מחרוזת
+     * Create SSL context with custom certificate from string.
      * 
-     * @param certContent תוכן הסרטיפיקט (PEM format)
-     * @return SSLContext מוגדר
+     * @param certContent Certificate content in PEM format
+     * @return Configured SSLContext
      */
     private SSLContext createSSLContextWithCustomCert(String certContent) throws Exception {
-        // הסר רווחים מיותרים ותקן את הפורמט
         certContent = certContent.trim();
         
-        // אם הסרטיפיקט לא מתחיל ב-BEGIN CERTIFICATE, הוסף את זה
         if (!certContent.startsWith("-----BEGIN CERTIFICATE-----")) {
             certContent = "-----BEGIN CERTIFICATE-----\n" + 
                          certContent + 
                          "\n-----END CERTIFICATE-----";
         }
         
-        // המרת הסרטיפיקט למחרוזת bytes
         byte[] certBytes = certContent.getBytes("UTF-8");
         
-        // יצירת CertificateFactory
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
         X509Certificate cert = (X509Certificate) cf.generateCertificate(
             new ByteArrayInputStream(certBytes)
         );
         
-        // יצירת KeyStore והוספת הסרטיפיקט
         KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
         keyStore.load(null, null);
         keyStore.setCertificateEntry("custom-cert", cert);
         
-        // יצירת TrustManager עם ה-KeyStore
         TrustManagerFactory tmf = TrustManagerFactory.getInstance(
             TrustManagerFactory.getDefaultAlgorithm()
         );
         tmf.init(keyStore);
         
-        // יצירת SSLContext
         SSLContext sslContext = SSLContext.getInstance("TLS");
         sslContext.init(null, tmf.getTrustManagers(), new SecureRandom());
         
@@ -224,8 +229,7 @@ public class VisionLanguageModelParser extends AbstractParser {
             throw new TikaException("VLM API not configured. Set TIKA_VLM_API_KEY and TIKA_VLM_ENDPOINT");
         }
 
-        byte[] imageData = readInputStream(stream);
-        
+        byte[] imageData = readInputStream(stream);    
         if (imageData.length > maxImageSize) {
             throw new TikaException("Image size exceeds maximum allowed size of " + maxImageSize + " bytes");
         }
@@ -238,15 +242,30 @@ public class VisionLanguageModelParser extends AbstractParser {
         }
 
         try {
-            LOGGER.info("start");
-            String analysis = "HI VISION";
+            LOGGER.info("Starting VLM analysis for image");
             // String analysis = callVisionAPI(base64Image, mimeType);
-             // *** כותבים רק למטה-דאטה של ה-embedded ***
-            metadata.set("vlm:provider", provider);
-            metadata.set("vlm:model", modelName);
-            metadata.set("vlm:prompt", prompt);
-            metadata.set("vlm:analysis", analysis);
-            LOGGER.info("END");
+            String analysis = "HII";
+            XHTMLContentHandler xhtml = new XHTMLContentHandler(handler, metadata);
+            xhtml.startDocument();
+            
+            xhtml.startElement("div", "class", "vlm-analysis");
+            xhtml.startElement("h2");
+            xhtml.characters("Vision Language Model Analysis");
+            xhtml.endElement("h2");
+            
+            xhtml.startElement("p");
+            xhtml.characters(analysis);
+            xhtml.endElement("p");
+
+            // Use colon-separated metadata keys to match the injector expectations
+            metadata.add("vlm:provider", provider);
+            metadata.add("vlm:model", modelName);
+            metadata.add("vlm:prompt", prompt);
+            metadata.add("vlm:analysis", analysis);
+                        
+            xhtml.endElement("div");
+            xhtml.endDocument();
+            LOGGER.info("Completed VLM analysis for image");
         } catch (Exception e) {
             throw new TikaException("Failed to analyze image with VLM", e);
         }
@@ -297,14 +316,15 @@ public class VisionLanguageModelParser extends AbstractParser {
                     .timeout(Duration.ofSeconds(timeout))
                     .POST(HttpRequest.BodyPublishers.ofString(requestBody))
                     .build();
+
             }
 
             HttpResponse<String> response;
             try {
                 response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-                LOGGER.debug("Successfully connected with secure HTTP client");
+                LOGGER.info("Successfully connected with secure HTTP client");
             } catch (Exception e) {
-                LOGGER.warn("Secure HTTP client failed: {}", e.getMessage());
+                LOGGER.info("Secure HTTP client failed: {}", e.getMessage());
                 LOGGER.info("Falling back to unsafe HTTP client...");
                 
                 try {
