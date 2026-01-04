@@ -37,6 +37,8 @@ RUN mkdir -p /tika-extras /tmp/tm && \
     curl -L -o imageio-thumbsdb-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-thumbsdb/3.9.4/imageio-thumbsdb-3.9.4.jar && \
     curl -L -o common-lang-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/common/common-lang/3.9.4/common-lang-3.9.4.jar && \
     curl -L -o imageio-metadata-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/imageio/imageio-metadata/3.9.4/imageio-metadata-3.9.4.jar && \
+    curl -L -o common-io-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/common/common-io/3.9.4/common-io-3.9.4.jar && \
+    curl -L -o common-image-3.9.4.jar https://repo1.maven.org/maven2/com/twelvemonkeys/common/common-image/3.9.4/common-image-3.9.4.jar && \
     cp *.jar /tika-extras/ && \
     rm -rf /tmp/tm
 
